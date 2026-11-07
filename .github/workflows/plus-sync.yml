@@ -1,0 +1,91 @@
+name: Mirror MediaFlowApp into MediaFlowAppPlus
+
+# Every 15 minutes: if AlexGodly/MediaFlowApp's main branch moved, copy it here
+# (without legacy/), switch it to the MediaFlow Plus backend and name, commit,
+# and start plus-release.yml, which publishes a release when the version is new.
+on:
+  schedule:
+    - cron: '4,19,34,49 * * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Re-run the mirror even if MediaFlowApp hasn't moved
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: mediaflowappplus-sync
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout MediaFlowAppPlus
+        uses: actions/checkout@v4
+        with:
+          path: plus
+
+      - name: Has MediaFlowApp changed?
+        id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          SHA="$(gh api repos/AlexGodly/MediaFlowApp/commits/main --jq .sha)"
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "Could not read MediaFlowApp main" >&2; exit 1; }
+          CURRENT="$(python3 -c 'import json;print(json.load(open("plus/plus/state.json")).get("upstream_sha",""))')"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          if [[ "$SHA" == "$CURRENT" && "$FORCE" != "true" ]]; then
+            echo "sync=false" >> "$GITHUB_OUTPUT"
+            echo "MediaFlowApp ${SHA:0:12} is already mirrored."
+          else
+            echo "sync=true" >> "$GITHUB_OUTPUT"
+            echo "Mirroring MediaFlowApp ${SHA:0:12} (was ${CURRENT:0:12})."
+          fi
+
+      - name: Checkout MediaFlowApp (read-only, without legacy/)
+        if: steps.detect.outputs.sync == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: AlexGodly/MediaFlowApp
+          ref: ${{ steps.detect.outputs.sha }}
+          path: upstream
+          persist-credentials: false
+          filter: blob:none
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /*
+            !/legacy/
+            !/beta/
+
+      - name: Mirror and switch to MediaFlow Plus
+        if: steps.detect.outputs.sync == 'true'
+        run: |
+          set -euo pipefail
+          python3 plus/plus/sync.py --upstream upstream --plus plus --sha "${{ steps.detect.outputs.sha }}"
+          python3 plus/tool/release_guard.py
+
+      - name: Commit and start the release
+        if: steps.detect.outputs.sync == 'true'
+        working-directory: plus
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.detect.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          VERSION="$(python3 -c 'import json;print(json.load(open("plus/state.json"))["app_version"])')"
+          MSG="$(gh api "repos/AlexGodly/MediaFlowApp/commits/$SHA" --jq '.commit.message | split("\n")[0]')"
+          git commit -m "Mirror MediaFlowApp ${SHA:0:12} (v${VERSION}): ${MSG}" || { echo "Nothing changed."; exit 0; }
+          git push origin HEAD:main
+          # Pushes made with this token don't start other workflows; a dispatch does.
+          gh workflow run plus-release.yml --ref main

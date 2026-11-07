@@ -1,0 +1,96 @@
+name: MediaFlow Plus release (Android, Windows, iOS)
+
+# Started by plus-sync.yml after each mirror (and on direct pushes to main).
+# Publishes a stable release only when this version has no release yet,
+# exactly like MediaFlowApp.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mediaflowappplus-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Version and release contract
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      publish: ${{ steps.v.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python tool/release_guard.py
+      - id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="$(sed -nE 's/^version:[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+)\+[0-9]+.*/\1/p' pubspec.yaml)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if gh release view "mediaflowappplus-v$VERSION" >/dev/null 2>&1; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::mediaflowappplus-v$VERSION already released; waiting for MediaFlowApp's next version."
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: prepare
+    if: needs.prepare.outputs.publish == 'true'
+    uses: ./.github/workflows/build.yml
+    secrets: inherit
+    with:
+      app_version: ${{ needs.prepare.outputs.version }}
+
+  release:
+    name: Publish GitHub release
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      APP_VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Stage release files
+        run: |
+          set -euo pipefail
+          TAG="mediaflowappplus-v${APP_VERSION}"
+          mkdir -p dist
+          cp artifacts/android/* artifacts/windows/* artifacts/ios/* dist/
+          git archive --format=zip --prefix="${TAG}/" -o "dist/MediaFlowAppPlus-${APP_VERSION}-source.zip" HEAD
+          (cd dist && sha256sum * > SHA256SUMS.txt)
+          ls -la dist
+          for f in "MediaFlowPlus-${APP_VERSION}-Android.apk" "MediaFlowPlus-${APP_VERSION}-Windows-x64-Setup.exe" \
+                   "MediaFlowPlus-${APP_VERSION}-Windows-x64-portable.zip" "MediaFlowPlus-${APP_VERSION}-iOS-unsigned.ipa"; do
+            test -s "dist/$f"
+          done
+          SHA="$(python3 -c 'import json;print(json.load(open("plus/state.json"))["upstream_sha"])')"
+          {
+            printf '# MediaFlow Plus %s\n\n' "$APP_VERSION"
+            printf 'The MediaFlow app for your **MediaFlow Plus** account: MediaFlowApp %s (commit %s) built for the MediaFlow Plus backend. It installs next to the MediaFlow app.\n\n' "$APP_VERSION" "${SHA:0:12}"
+            cat "docs/releases/mediaflowapp-v${APP_VERSION}.md"
+          } > release-notes.md
+      - name: Publish stable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="mediaflowappplus-v${APP_VERSION}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::notice::Release $TAG already exists."
+            exit 0
+          fi
+          gh release create "$TAG" dist/* \
+            --target "$GITHUB_SHA" \
+            --title "MediaFlow Plus ${APP_VERSION} (Android, Windows, iOS)" \
+            --notes-file release-notes.md \
+            --latest
