@@ -2,7 +2,8 @@ name: MediaFlow Plus release (Android, Windows, iOS)
 
 # Started by plus-sync.yml after each mirror (and on direct pushes to main).
 # Publishes a stable release only when this version has no release yet,
-# exactly like MediaFlowApp.
+# exactly like MediaFlowApp. The tests and three-platform build are
+# MediaFlowApp's own build workflow, run on this repo's (Plus) code.
 on:
   push:
     branches: [main]
@@ -27,11 +28,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python tool/release_guard.py
       - id: v
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          if [ ! -f pubspec.yaml ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Nothing mirrored yet; run 'Mirror MediaFlowApp into MediaFlowAppPlus'."
+            exit 0
+          fi
+          python tool/release_guard.py
           VERSION="$(sed -nE 's/^version:[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+)\+[0-9]+.*/\1/p' pubspec.yaml)"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           if gh release view "mediaflowappplus-v$VERSION" >/dev/null 2>&1; then
@@ -44,8 +50,10 @@ jobs:
   build:
     needs: prepare
     if: needs.prepare.outputs.publish == 'true'
-    uses: ./.github/workflows/build.yml
-    secrets: inherit
+    uses: AlexGodly/MediaFlowApp/.github/workflows/build.yml@main
+    secrets:
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
     with:
       app_version: ${{ needs.prepare.outputs.version }}
 
@@ -67,6 +75,8 @@ jobs:
           TAG="mediaflowappplus-v${APP_VERSION}"
           mkdir -p dist
           cp artifacts/android/* artifacts/windows/* artifacts/ios/* dist/
+          # MediaFlowApp's build names files MediaFlow-*; Plus releases use MediaFlowPlus-*.
+          for f in dist/MediaFlow-*; do mv "$f" "dist/MediaFlowPlus-${f#dist/MediaFlow-}"; done
           git archive --format=zip --prefix="${TAG}/" -o "dist/MediaFlowAppPlus-${APP_VERSION}-source.zip" HEAD
           (cd dist && sha256sum * > SHA256SUMS.txt)
           ls -la dist

@@ -14,12 +14,12 @@ It's a separate app (Android/iOS id `com.alexgodly.plus.mediaflow`, its own Wind
 
 ## How it stays identical to MediaFlowApp
 
-Nothing is developed here. Every 15 minutes `.github/workflows/plus-sync.yml` checks MediaFlowApp's `main`; when it moved, it copies every file (except MediaFlowApp's `legacy/` archives, release workflow, README and CLAUDE.md), then `plus/sync.py` changes only:
+Nothing is developed here. Every 15 minutes `.github/workflows/plus-sync.yml` checks MediaFlowApp's `main`; when it moved, it copies every file (except MediaFlowApp's `legacy/` archives, `.github/`, README and CLAUDE.md), then `plus/sync.py` changes only:
 
 - `lib/src/config.dart` — MediaFlow Plus Supabase project, publishable key and website
-- `tool/prepare_platforms.py`, `tool/windows_installer.iss`, `.github/workflows/build.yml` — the name "MediaFlow Plus", its own app ids and `MediaFlowPlus-*` file names
+- `tool/prepare_platforms.py`, `tool/windows_installer.iss` — the name "MediaFlow Plus" and its own app ids
 - `tool/release_guard.py` — replaced by `plus/overlay/tool/release_guard.py`
 
 Every other file is checked to be byte-identical. If MediaFlowApp changes one of those spots so the patch no longer fits, the sync stops before anything is published.
 
-After committing, it starts `.github/workflows/plus-release.yml`, which runs MediaFlowApp's own tests and three-platform build and publishes a stable release `mediaflowappplus-v<version>` whenever MediaFlowApp's version is new. `plus/state.json` records which MediaFlowApp commit is mirrored. Run the sync by hand from the Actions tab (**Mirror MediaFlowApp into MediaFlowAppPlus → Run workflow**).
+After committing, it starts `.github/workflows/plus-release.yml`, which runs MediaFlowApp's own build workflow (tests and three-platform build, called straight from MediaFlowApp, since a workflow's own token can't copy workflow files) on the Plus code and publishes a stable release `mediaflowappplus-v<version>` whenever MediaFlowApp's version is new. `plus/state.json` records which MediaFlowApp commit is mirrored. Run the sync by hand from the Actions tab (**Mirror MediaFlowApp into MediaFlowAppPlus → Run workflow**).
